@@ -329,10 +329,84 @@ const styles = `
     from { opacity: 0; transform: translateY(16px); }
     to   { opacity: 1; transform: translateY(0); }
   }
+
+  /* ═══ IN-APP TURN ALERT OVERLAY ══════════════════════════════════════════════ */
+  .tb-turn-overlay {
+    position: fixed; inset: 0; z-index: 9999;
+    background: rgba(0,0,0,0.82); backdrop-filter: blur(6px);
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .tb-turn-overlay-card {
+    background: #111; border: 1.5px solid #d4af5f; border-radius: 28px;
+    padding: 36px 24px 28px; text-align: center; max-width: 320px; width: 100%;
+    animation: tbSlideIn 0.35s cubic-bezier(0.22,1,0.36,1) both;
+  }
+  .tb-turn-overlay-icon { font-size: 52px; margin-bottom: 14px; }
+  .tb-turn-overlay-title {
+    font-family: 'DM Serif Display', serif; font-size: 24px; color: #d4af5f;
+    margin-bottom: 10px;
+  }
+  .tb-turn-overlay-sub {
+    font-size: 13px; color: #888; margin-bottom: 28px; line-height: 1.6;
+  }
+
+  /* ── iOS "Add to Home Screen" tip ── */
+  .tb-ios-tip {
+    background: rgba(212,175,95,0.07); border: 1.5px solid rgba(212,175,95,0.25);
+    border-radius: 12px; padding: 12px 14px; margin-bottom: 14px;
+  }
+  .tb-ios-tip-header {
+    display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;
+  }
+  .tb-ios-tip-title { font-size: 12px; font-weight: 600; color: #d4af5f; display: flex; align-items: center; gap: 5px; }
+  .tb-ios-steps { padding-left: 0; list-style: none; }
+  .tb-ios-steps li {
+    font-size: 11px; color: #888; margin-bottom: 4px;
+    display: flex; gap: 6px; line-height: 1.5;
+  }
+  .tb-ios-steps li span:first-child { min-width: 14px; font-weight: 600; color: #d4af5f; }
+  .tb-ios-dismiss {
+    background: none; border: none; color: #555; cursor: pointer;
+    font-size: 18px; line-height: 1; padding: 0; flex-shrink: 0; margin-left: 6px;
+  }
+
+  /* ── Notification permission states ── */
+  .tb-notif-granted {
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+    background: rgba(16,185,129,0.08); border: 1px solid rgba(16,185,129,0.3);
+    border-radius: 12px; font-size: 12px; color: #10b981; margin-bottom: 14px;
+  }
+  .tb-notif-denied {
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+    background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.25);
+    border-radius: 12px; font-size: 12px; color: #ef4444; margin-bottom: 14px;
+  }
 `;
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 const OCCASIONS = ["Birthday", "Anniversary", "Business Meeting", "Family Gathering", "Other"];
+
+// ─── Platform / notification detection ─────────────────────────────────────────
+const PLATFORM = (() => {
+  if (typeof navigator === "undefined") return "desktop";
+  if (/iP(hone|ad|od)/i.test(navigator.userAgent)) return "ios";
+  if (/Android/i.test(navigator.userAgent)) return "android";
+  return "desktop";
+})();
+
+const isStandalonePWA = () =>
+  typeof window !== "undefined" &&
+  (window.matchMedia("(display-mode: standalone)").matches ||
+    Boolean(/** @type {any} */ (navigator).standalone));
+
+const webNotifSupported = () =>
+  typeof window !== "undefined" && "Notification" in window;
+
+const getInitialNotifPermission = () => {
+  if (!webNotifSupported()) return "unsupported";
+  if (PLATFORM === "ios" && !isStandalonePWA()) return "ios-browser";
+  return Notification.permission;
+};
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 const formatPhone = (val) => {
@@ -369,10 +443,10 @@ const playChime = () => {
 };
 
 const requestNotificationPermission = async () => {
-  if (!("Notification" in window)) return;
-  if (Notification.permission === "default") {
-    await Notification.requestPermission();
-  }
+  if (!webNotifSupported()) return "unsupported";
+  if (PLATFORM === "ios" && !isStandalonePWA()) return "ios-browser";
+  if (Notification.permission !== "default") return Notification.permission;
+  return Notification.requestPermission();
 };
 
 const showWebNotification = (title, body) => {
@@ -400,6 +474,11 @@ export const TableBooking = () => {
   const [consent, setConsent]         = useState(false);
   const [errors, setErrors]           = useState({});
   const [loading, setLoading]         = useState(false);
+
+  // Notification
+  const [notifPermission, setNotifPermission] = useState(getInitialNotifPermission);
+  const [showTurnAlert, setShowTurnAlert]     = useState(false);
+  const [notifDismissed, setNotifDismissed]   = useState(false);
 
   // Identity & booking
   const [visitorId, setVisitorId]     = useState(null);
@@ -460,11 +539,23 @@ export const TableBooking = () => {
     if (prevNotifiedAt.current === iso) return;
     prevNotifiedAt.current = iso;
     playChime();
+    setShowTurnAlert(true);
     showWebNotification(
       "Your table is ready! 🍽",
       `Token #${myBooking.token} — Please come to the front now.`
     );
   }, [myBooking?.notifiedAt]);
+
+  // Also trigger chime + overlay when status transitions to "serving"
+  const prevStatus = useRef(null);
+  useEffect(() => {
+    if (!myBooking) return;
+    if (myBooking.status === "serving" && prevStatus.current !== "serving") {
+      playChime();
+      setShowTurnAlert(true);
+    }
+    prevStatus.current = myBooking.status;
+  }, [myBooking?.status]);
 
   // Handlers
   const validate = () => {
@@ -475,13 +566,19 @@ export const TableBooking = () => {
     return errs;
   };
 
+  const handleRequestNotification = async () => {
+    const result = await requestNotificationPermission();
+    setNotifPermission(result ?? "unsupported");
+  };
+
   const handleBook = async () => {
     const errs = validate();
     if (Object.keys(errs).length) { setErrors(errs); return; }
     setErrors({});
     setLoading(true);
     try {
-      await requestNotificationPermission();
+      const perm = await requestNotificationPermission();
+      if (perm) setNotifPermission(perm);
       const id = await Meteor.callAsync("tableQueue.insert", {
         phone, name, adults, children, occasion, occasionNote, preferredTime, consent, visitorId, outletId,
       });
@@ -503,6 +600,7 @@ export const TableBooking = () => {
     setPhone(""); setName(""); setAdults(1); setChildren(0);
     setOccasion(""); setOccasionNote(""); setPreferredTime(""); setConsent(false);
     setBookingId(null); setRating(0); setComment(""); setRatingSubmitted(false);
+    setShowTurnAlert(false);
   };
 
   const handleRate = async () => {
@@ -804,11 +902,45 @@ export const TableBooking = () => {
                   <p className="tb-queue-sub">We'll notify you when your table is ready</p>
                 </div>
 
-                {/* Notification opt-in banner */}
-                {"Notification" in window && Notification.permission === "default" && (
+                {/* ── Notification opt-in — platform-aware ── */}
+                {!notifDismissed && notifPermission === "default" && (
                   <div className="tb-notify-banner">
                     <span>🔔 Get alerted when it's your turn</span>
-                    <button onClick={requestNotificationPermission}>Enable</button>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+                      <button onClick={handleRequestNotification}>Enable</button>
+                      <button
+                        onClick={() => setNotifDismissed(true)}
+                        style={{ background: "none", border: "none", color: "#777", cursor: "pointer", fontSize: 18, padding: "4px 2px", lineHeight: 1 }}
+                      >×</button>
+                    </div>
+                  </div>
+                )}
+
+                {!notifDismissed && notifPermission === "ios-browser" && (
+                  <div className="tb-ios-tip">
+                    <div className="tb-ios-tip-header">
+                      <span className="tb-ios-tip-title">🔔 Enable alerts on iOS</span>
+                      <button className="tb-ios-dismiss" onClick={() => setNotifDismissed(true)}>×</button>
+                    </div>
+                    <ol className="tb-ios-steps">
+                      <li><span>1.</span><span>Tap <strong>Share</strong> (the □↑ icon) in Safari</span></li>
+                      <li><span>2.</span><span>Tap <strong>"Add to Home Screen"</strong></span></li>
+                      <li><span>3.</span><span>Open the app from your home screen to get push alerts</span></li>
+                    </ol>
+                  </div>
+                )}
+
+                {notifPermission === "granted" && (
+                  <div className="tb-notif-granted">
+                    <span>✓</span>
+                    <span>Notifications on — we'll alert you when it's your turn</span>
+                  </div>
+                )}
+
+                {notifPermission === "denied" && (
+                  <div className="tb-notif-denied">
+                    <span>⚠</span>
+                    <span>Notifications blocked — enable them in your browser settings to get alerts</span>
                   </div>
                 )}
 
@@ -884,6 +1016,23 @@ export const TableBooking = () => {
 
         </div>
       </div>
+
+      {/* ── In-app turn alert overlay (works on all platforms) ── */}
+      {showTurnAlert && (
+        <div className="tb-turn-overlay" onClick={() => setShowTurnAlert(false)}>
+          <div className="tb-turn-overlay-card" onClick={(e) => e.stopPropagation()}>
+            <div className="tb-turn-overlay-icon">🍽️</div>
+            <p className="tb-turn-overlay-title">Your Table is Ready!</p>
+            <p className="tb-turn-overlay-sub">
+              Token #{myBooking?.token} — Please come to the front desk now.
+              {myBooking?.name ? ` Welcome, ${myBooking.name}!` : ""}
+            </p>
+            <button className="tb-cta" onClick={() => setShowTurnAlert(false)}>
+              Got it!
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 };
