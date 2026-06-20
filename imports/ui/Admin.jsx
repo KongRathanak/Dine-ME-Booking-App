@@ -3,6 +3,7 @@ import { Meteor } from "meteor/meteor";
 import { useSubscribe, useFind } from "meteor/react-meteor-data";
 import * as XLSX from "xlsx";
 import { TableQueueCollection } from "../api/tableQueue";
+import { OutletSettingsCollection } from "../api/outletSettings";
 import { OUTLETS, getOutlet } from "./outlets";
 
 const OCCASIONS = ["Birthday", "Anniversary", "Business Meeting", "Family Gathering", "Other"];
@@ -386,7 +387,55 @@ html, body { background: #0a0a0a; min-height: 100vh; }
   font-family: 'DM Mono', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .aq-outlet-tab.active .aq-outlet-tab-addr { color: #555; }
+
+/* ── Disable-period management ── */
+.aq-avail-period {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
+  padding: 8px 10px; border-radius: 8px;
+  background: rgba(239,68,68,0.06); border: 1px solid rgba(239,68,68,0.18);
+  margin-bottom: 6px;
+}
+.aq-avail-period-info { font-size: 11px; color: #ccc; line-height: 1.5; }
+.aq-avail-period-reason { font-size: 10px; color: #ef4444; margin-top: 2px; }
+.aq-avail-period-del {
+  flex-shrink: 0; background: none; border: none; color: #555; cursor: pointer;
+  font-size: 14px; padding: 0 2px; line-height: 1;
+}
+.aq-avail-period-del:hover { color: #ef4444; }
+.aq-avail-add {
+  width: 100%; padding: 8px; border-radius: 8px;
+  background: none; border: 1px dashed #2a2a2a; color: #555;
+  font-size: 11px; cursor: pointer; margin-top: 4px; transition: all 0.15s;
+}
+.aq-avail-add:hover { border-color: #444; color: #999; }
+.aq-avail-active-badge {
+  display: inline-block; font-size: 9px; font-weight: 600; letter-spacing: 0.05em;
+  padding: 2px 6px; border-radius: 4px; margin-left: 6px;
+  background: rgba(239,68,68,0.12); color: #ef4444; border: 1px solid rgba(239,68,68,0.25);
+  vertical-align: middle;
+}
+
+/* ── Disable-period modal ── */
+.aq-dp-modal {
+  background: #141414; border: 1px solid #222; border-radius: 14px;
+  padding: 24px; width: 340px; max-width: 92vw;
+}
+.aq-dp-label { font-size: 11px; color: #666; margin-bottom: 4px; margin-top: 12px; display: block; }
+.aq-dp-input {
+  width: 100%; padding: 9px 12px; border-radius: 8px;
+  background: #1a1a1a; border: 1px solid #222; color: #fff;
+  font-size: 13px; font-family: inherit;
+}
+.aq-dp-input:focus { outline: none; border-color: #444; }
+.aq-dp-error { font-size: 11px; color: #ef4444; margin-top: 6px; }
+.aq-dp-submit {
+  width: 100%; margin-top: 18px; padding: 11px;
+  border-radius: 9px; border: none; cursor: pointer;
+  background: #ef4444; color: #fff; font-size: 13px; font-weight: 500;
+}
+.aq-dp-submit:disabled { opacity: 0.5; cursor: not-allowed; }
 `;
+
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 const fmtTime = (date) =>
@@ -464,10 +513,12 @@ const exportToExcel = (rows, label) => {
 
 // ─── Component ─────────────────────────────────────────────────────────────────
 export const Admin = () => {
-  const isLoading = useSubscribe("tableQueue");
+  const isLoading         = useSubscribe("tableQueue");
+  const isSettingsLoading = useSubscribe("outletSettings");
   const allQueue  = useFind(() =>
     TableQueueCollection.find({}, { sort: { prioritized: -1, createdAt: 1 } })
   );
+  const allSettings = useFind(() => OutletSettingsCollection.find());
 
   const [expanded,     setExpanded]     = useState(null);
   const [filter,       setFilter]       = useState("all");
@@ -477,6 +528,14 @@ export const Admin = () => {
   const [search,       setSearch]       = useState("");
   const [toast,        setToast]        = useState(null);
   const [time,         setTime]         = useState(new Date());
+
+  // Disable-period modal state
+  const [showDpModal, setShowDpModal] = useState(false);
+  const [dpFrom,      setDpFrom]      = useState("");
+  const [dpTo,        setDpTo]        = useState("");
+  const [dpReason,    setDpReason]    = useState("");
+  const [dpError,     setDpError]     = useState("");
+  const [dpLoading,   setDpLoading]   = useState(false);
 
   // New booking modal state
   const [showNewBooking,  setShowNewBooking]  = useState(false);
@@ -498,6 +557,38 @@ export const Admin = () => {
   const showToast = (msg) => {
     setToast(msg);
     setTimeout(() => setToast(null), 3000);
+  };
+
+  // Disable-period helpers
+  const outletSettingsDoc  = allSettings.find((s) => s.outletId === outletFilter);
+  const disabledPeriods    = outletSettingsDoc?.disabledPeriods || [];
+  const now                = time;
+  const activeDisabledPeriod = disabledPeriods.find(
+    (p) => new Date(p.from) <= now && now <= new Date(p.to)
+  );
+
+  const handleAddDisabledPeriod = async () => {
+    if (!dpFrom || !dpTo) { setDpError("Both start and end are required"); return; }
+    if (new Date(dpFrom) >= new Date(dpTo)) { setDpError("End must be after start"); return; }
+    setDpError(""); setDpLoading(true);
+    try {
+      await Meteor.callAsync("outletSettings.addDisabledPeriod", {
+        outletId: outletFilter, from: dpFrom, to: dpTo, reason: dpReason,
+      });
+      setShowDpModal(false); setDpFrom(""); setDpTo(""); setDpReason("");
+      showToast("Booking disabled for the period");
+    } catch (err) {
+      setDpError(err.reason || "Failed to save");
+    } finally {
+      setDpLoading(false);
+    }
+  };
+
+  const handleRemoveDisabledPeriod = async (periodId) => {
+    await Meteor.callAsync("outletSettings.removeDisabledPeriod", {
+      outletId: outletFilter, periodId,
+    });
+    showToast("Period removed");
   };
 
   const updateStatus = async (id, status) => {
@@ -641,6 +732,33 @@ export const Admin = () => {
                   </button>
                 ))}
               </div>
+            </div>
+
+            {/* Booking Availability */}
+            <div className="aq-sidebar-section">
+              <div className="aq-section-label">
+                Booking Availability
+                {activeDisabledPeriod && <span className="aq-avail-active-badge">CLOSED</span>}
+              </div>
+              {disabledPeriods.length === 0 && (
+                <div style={{ fontSize: 11, color: "#444", marginBottom: 6 }}>No closures scheduled.</div>
+              )}
+              {disabledPeriods.map((p) => {
+                const isActive = new Date(p.from) <= now && now <= new Date(p.to);
+                return (
+                  <div key={p.id} className="aq-avail-period">
+                    <div className="aq-avail-period-info">
+                      <div>{new Date(p.from).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} → {new Date(p.to).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
+                      {p.reason && <div className="aq-avail-period-reason">{p.reason}</div>}
+                      {isActive && <div style={{ fontSize: 9, color: "#ef4444", fontWeight: 700, marginTop: 2 }}>ACTIVE NOW</div>}
+                    </div>
+                    <button className="aq-avail-period-del" onClick={() => handleRemoveDisabledPeriod(p.id)}>×</button>
+                  </div>
+                );
+              })}
+              <button className="aq-avail-add" onClick={() => { setDpFrom(""); setDpTo(""); setDpReason(""); setDpError(""); setShowDpModal(true); }}>
+                + Add closure period
+              </button>
             </div>
 
             {/* Overview */}
@@ -875,6 +993,28 @@ export const Admin = () => {
             </div>
           </main>
         </div>
+
+        {/* ── Disable Period Modal ── */}
+        {showDpModal && (
+          <div className="aq-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowDpModal(false); }}>
+            <div className="aq-dp-modal">
+              <div className="aq-modal-head">
+                <span className="aq-modal-title">Add Closure Period · {getOutlet(outletFilter).name}</span>
+                <button className="aq-modal-close" onClick={() => setShowDpModal(false)}>×</button>
+              </div>
+              <label className="aq-dp-label">Start</label>
+              <input className="aq-dp-input" type="datetime-local" value={dpFrom} onChange={(e) => setDpFrom(e.target.value)} />
+              <label className="aq-dp-label">End</label>
+              <input className="aq-dp-input" type="datetime-local" value={dpTo} onChange={(e) => setDpTo(e.target.value)} />
+              <label className="aq-dp-label">Reason (optional)</label>
+              <input className="aq-dp-input" type="text" placeholder="e.g. Private event, Maintenance…" value={dpReason} onChange={(e) => setDpReason(e.target.value)} />
+              {dpError && <div className="aq-dp-error">{dpError}</div>}
+              <button className="aq-dp-submit" onClick={handleAddDisabledPeriod} disabled={dpLoading}>
+                {dpLoading ? "Saving…" : "Disable Booking for This Period"}
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* ── New Booking Modal ── */}
         {showNewBooking && (

@@ -2,8 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { Meteor } from "meteor/meteor";
 import { useSubscribe, useFind } from "meteor/react-meteor-data";
 import { useSearchParams } from "react-router";
-import FingerprintJS from "@fingerprintjs/fingerprintjs";
 import { TableQueueCollection } from "../api/tableQueue";
+import { OutletSettingsCollection } from "../api/outletSettings";
 import { OUTLETS, getOutlet } from "./outlets";
 
 // ─── Styles ────────────────────────────────────────────────────────────────────
@@ -381,6 +381,15 @@ const styles = `
     background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.25);
     border-radius: 12px; font-size: 12px; color: #ef4444; margin-bottom: 14px;
   }
+
+  .tb-closed-banner {
+    background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.25);
+    border-radius: 14px; padding: 24px 20px; text-align: center; margin: 8px 0 16px;
+  }
+  .tb-closed-icon { font-size: 32px; margin-bottom: 10px; }
+  .tb-closed-title { font-size: 16px; font-weight: 600; color: #ef4444; margin-bottom: 6px; }
+  .tb-closed-msg { font-size: 12px; color: #888; line-height: 1.6; }
+  .tb-closed-reason { font-size: 11px; color: #666; margin-top: 8px; font-style: italic; }
 `;
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
@@ -490,18 +499,34 @@ export const TableBooking = () => {
   const [comment, setComment]         = useState("");
   const [ratingSubmitted, setRatingSubmitted] = useState(false);
 
-  // Subscription
-  const isLoading = useSubscribe("tableQueue");
+  // Subscriptions
+  const isLoading         = useSubscribe("tableQueue");
+  const isSettingsLoading = useSubscribe("outletSettings");
   const allQueue  = useFind(() =>
     TableQueueCollection.find({}, { sort: { prioritized: -1, createdAt: 1 } })
   );
+  const allSettings = useFind(() => OutletSettingsCollection.find());
 
-  // FingerprintJS
+  // Cookie-based visitor identity
   useEffect(() => {
-    FingerprintJS.load()
-      .then((fp) => fp.get())
-      .then((result) => setVisitorId(result.visitorId))
-      .catch(console.error);
+    const COOKIE_NAME = "dine_me_visitor_id";
+    const existing = document.cookie
+      .split("; ")
+      .find((row) => row.startsWith(`${COOKIE_NAME}=`))
+      ?.split("=")[1];
+    if (existing) {
+      setVisitorId(existing);
+    } else {
+      const id = crypto.randomUUID?.() ?? (() => {
+        const b = crypto.getRandomValues(new Uint8Array(16));
+        b[6] = (b[6] & 0x0f) | 0x40;
+        b[8] = (b[8] & 0x3f) | 0x80;
+        return [...b].map((v, i) => ([4,6,8,10].includes(i) ? "-" : "") + v.toString(16).padStart(2, "0")).join("");
+      })();
+      const expires = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toUTCString();
+      document.cookie = `${COOKIE_NAME}=${id}; expires=${expires}; path=/; SameSite=Lax`;
+      setVisitorId(id);
+    }
   }, []);
 
   // Auto-restore queue view from today's booking by fingerprint
@@ -518,6 +543,14 @@ export const TableBooking = () => {
     }
     setInitialized(true);
   }, [visitorId, allQueue, initialized]);
+
+  // Booking availability check
+  const outletSettingsDoc  = allSettings.find((s) => s.outletId === outletId);
+  const disabledPeriods    = outletSettingsDoc?.disabledPeriods || [];
+  const activeDisabledPeriod = disabledPeriods.find((p) => {
+    const now = new Date();
+    return new Date(p.from) <= now && now <= new Date(p.to);
+  });
 
   // Derived queue data
   const myBooking       = allQueue.find((e) => e._id === bookingId);
@@ -671,6 +704,24 @@ export const TableBooking = () => {
                 </div>
 
                 <div className="tb-divider" />
+
+                {activeDisabledPeriod ? (
+                  <div className="tb-closed-banner">
+                    <div className="tb-closed-icon">🚫</div>
+                    <div className="tb-closed-title">Booking Temporarily Unavailable</div>
+                    <div className="tb-closed-msg">
+                      Online reservations are paused until{" "}
+                      {new Date(activeDisabledPeriod.to).toLocaleString([], {
+                        month: "short", day: "numeric",
+                        hour: "2-digit", minute: "2-digit",
+                      })}.
+                    </div>
+                    {activeDisabledPeriod.reason && (
+                      <div className="tb-closed-reason">{activeDisabledPeriod.reason}</div>
+                    )}
+                  </div>
+                ) : (
+                  <>
                 <p className="tb-section-label">Reserve your spot</p>
 
                 <div className="tb-field">
@@ -780,6 +831,8 @@ export const TableBooking = () => {
                 <button className="tb-cta" onClick={handleBook} disabled={loading}>
                   {loading ? "Reserving…" : "Join the queue →"}
                 </button>
+                  </>
+                )}
               </div>
             </div>
           )}

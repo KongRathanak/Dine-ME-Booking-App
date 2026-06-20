@@ -2,6 +2,7 @@ import { Meteor } from "meteor/meteor";
 import { LinksCollection } from "/imports/api/links";
 import { Random } from "meteor/random";
 import { TableQueueCollection } from "../imports/api/tableQueue";
+import { OutletSettingsCollection } from "../imports/api/outletSettings";
 
 async function insertLink({ title, url }) {
   await LinksCollection.insertAsync({ title, url, createdAt: new Date() });
@@ -49,6 +50,10 @@ Meteor.startup(async () => {
 
   Meteor.publish("tableQueue", function () {
     return TableQueueCollection.find({}, { sort: { prioritized: -1, createdAt: 1 } });
+  });
+
+  Meteor.publish("outletSettings", function () {
+    return OutletSettingsCollection.find();
   });
 });
 
